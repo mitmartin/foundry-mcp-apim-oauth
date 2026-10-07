@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix": {
+      "value": "mcpagent"
+    },
+    "apimPublisherEmail": {
+      "value": "<publisher-email>"
+    },
+    "githubAppClientId": {
+      "value": "<github-app-client-id>"
+    },
+    "developerPrincipalIds": {
+      "value": [
+        "<object-id-of-the-person-deploying>"
+      ]
+    },
+    "agentConsumerPrincipalIds": {
+      "value": []
+    }
+  }
+}

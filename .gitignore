@@ -1,0 +1,17 @@
+# Local parameters (may contain object IDs, emails, or client IDs)
+infra/main.parameters.json
+*.local.json
+
+# Credentials and environment files
+.env
+.foundry-mcp/
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Bicep build output
+infra/*.json.bak
