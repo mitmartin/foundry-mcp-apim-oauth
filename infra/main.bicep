@@ -1,11 +1,14 @@
 // ---------------------------------------------------------------------------
-// Foundry prompt agent + GitHub MCP through Azure API Management, with
-// per-user OAuth (each user signs in to GitHub once; calls run as that user).
+// Foundry prompt agents + third-party MCP servers through Azure API
+// Management, with per-user OAuth (each user signs in to each service once;
+// calls run as that user).
 //
 // Deploys:
 //   * Foundry account, project, and model deployment
-//   * API Management with a streaming MCP passthrough for GitHub's hosted MCP
-//   * A Foundry OAuth connection that holds each user's GitHub token
+//   * API Management with streaming MCP passthroughs for the MCP servers you
+//     enable: GitHub's hosted MCP (enableGitHub) and ZoomInfo's hosted MCP
+//     (enableZoomInfo)
+//   * Foundry OAuth connections that hold each user's tokens
 //   * Optional Foundry role assignments for developers and agent users
 //
 // Prompt agents are Foundry data-plane objects, not Azure Resource Manager
@@ -62,14 +65,17 @@ param apimPublisherEmail string
 @description('Publisher name shown in API Management.')
 param apimPublisherName string = 'MCP Gateway'
 
-@description('Client ID of the GitHub App that users authorize.')
-param githubAppClientId string
+@description('Deploy GitHub MCP: an APIM passthrough and a Foundry OAuth connection. See docs/github-setup.md.')
+param enableGitHub bool = false
+
+@description('Client ID of the GitHub App that users authorize. If empty, the connection is created with placeholders so you can get its callback URL first.')
+param githubAppClientId string = ''
 
 @secure()
-@description('Client secret of the GitHub App. Pass at deployment time; never store it in source control.')
-param githubAppClientSecret string
+@description('Client secret of the GitHub App. Pass it at deployment time and never store it in source control. Once the app exists, pass it on every deployment; an empty value resets the connection to placeholders.')
+param githubAppClientSecret string = ''
 
-@description('Name of the Foundry OAuth connection for GitHub. Changing it signs every user out.')
+@description('Name of the Foundry OAuth connection for GitHub. Must be unique within the Foundry account. Changing it signs every user out.')
 param githubConnectionName string = 'github-mcp-oauth'
 
 @description('OAuth scopes requested during sign-in. GitHub App permissions, not scopes, limit access.')
@@ -82,6 +88,29 @@ param githubToolsets string = 'context,repos,issues,pull_requests,actions'
 
 @description('Force GitHub MCP read-only mode for every agent.')
 param githubReadOnly bool = true
+
+@description('Deploy ZoomInfo MCP: an APIM passthrough and a Foundry OAuth connection. See docs/zoominfo-setup.md.')
+param enableZoomInfo bool = false
+
+@description('Client ID of the ZoomInfo MCP app. If empty, the connection is created with placeholders so you can get its callback URL first.')
+param zoominfoClientId string = ''
+
+@secure()
+@description('Client secret of the ZoomInfo MCP app. Once the app exists, pass it on every deployment; an empty value resets the connection to placeholders.')
+param zoominfoClientSecret string = ''
+
+@description('Name of the Foundry OAuth connection for ZoomInfo. Must be unique within the Foundry account. Changing it signs every user out.')
+param zoominfoConnectionName string = 'zoominfo-mcp-oauth'
+
+@description('OAuth scopes requested during ZoomInfo sign-in.')
+param zoominfoScopes array = [
+  'openid'
+  'profile'
+  'email'
+  'offline_access'
+  'zi_mcp'
+  'api:data:mcp'
+]
 
 @description('Object IDs of users or groups that build and test agents (Foundry User role on the project).')
 param developerPrincipalIds array = []
@@ -148,7 +177,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-
 }
 
 // ---------------------------------------------------------------------------
-// API Management and the GitHub MCP passthrough
+// API Management
 // ---------------------------------------------------------------------------
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
   name: apimName
@@ -166,13 +195,25 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
   }
 }
 
+// ---------------------------------------------------------------------------
+// MCP servers. Each one gets an APIM passthrough and a Foundry OAuth
+// connection; Foundry stores each user's token after that user's first
+// sign-in and sends it with every MCP call. A connection is created with
+// placeholder credentials until the app credentials are passed, so its
+// callback URL can be registered first. Redeploying with the real
+// credentials updates it in place and keeps the same callback URL.
+// ---------------------------------------------------------------------------
+var placeholderCredential = 'pending-registration'
+
+// GitHub
+var githubRegistered = !empty(githubAppClientId) && !empty(githubAppClientSecret)
 var githubPolicy = replace(
   replace(loadTextContent('policies/github-mcp.xml'), '__GITHUB_TOOLSETS__', githubToolsets),
   '__GITHUB_READONLY__',
   githubReadOnly ? 'true' : 'false'
 )
 
-module githubMcp 'modules/apim-mcp-passthrough.bicep' = {
+module githubMcp 'modules/apim-mcp-passthrough.bicep' = if (enableGitHub) {
   name: 'github-mcp-passthrough'
   params: {
     apimName: apim.name
@@ -184,25 +225,62 @@ module githubMcp 'modules/apim-mcp-passthrough.bicep' = {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Foundry OAuth connection. Foundry stores each user's GitHub token after
-// that user's first sign-in and sends it with every MCP call.
-// ---------------------------------------------------------------------------
-resource githubConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01' = {
+resource githubConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01' = if (enableGitHub) {
   parent: project
   name: githubConnectionName
   properties: any({
     authType: 'OAuth2'
     category: 'RemoteTool'
-    target: githubMcp.outputs.mcpUrl
+    target: githubMcp!.outputs.mcpUrl
     credentials: {
-      clientId: githubAppClientId
-      clientSecret: githubAppClientSecret
+      clientId: githubRegistered ? githubAppClientId : placeholderCredential
+      clientSecret: githubRegistered ? githubAppClientSecret : placeholderCredential
     }
     authorizationUrl: 'https://github.com/login/oauth/authorize'
     tokenUrl: 'https://github.com/login/oauth/access_token'
     refreshUrl: 'https://github.com/login/oauth/access_token'
     scopes: githubScopes
+    isSharedToAll: false
+    peRequirement: 'NotRequired'
+  })
+}
+
+// ZoomInfo
+var zoominfoRegistered = !empty(zoominfoClientId) && !empty(zoominfoClientSecret)
+
+module zoominfoMcp 'modules/apim-mcp-passthrough.bicep' = if (enableZoomInfo) {
+  name: 'zoominfo-mcp-passthrough'
+  params: {
+    apimName: apim.name
+    apiName: 'zoominfo-mcp'
+    displayName: 'ZoomInfo MCP (per-user OAuth passthrough)'
+    apiPath: 'zoominfo-mcp'
+    backendUrl: 'https://mcp.zoominfo.com'
+    policyXml: loadTextContent('policies/zoominfo-mcp.xml')
+  }
+}
+
+resource zoominfoConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01' = if (enableZoomInfo) {
+  parent: project
+  name: zoominfoConnectionName
+  // A new project's first OAuth connection provisions a shared connector
+  // gateway; creating two OAuth connections in parallel conflicts.
+  dependsOn: [
+    githubConnection
+  ]
+  properties: any({
+    authType: 'OAuth2'
+    category: 'RemoteTool'
+    target: zoominfoMcp!.outputs.mcpUrl
+    credentials: {
+      clientId: zoominfoRegistered ? zoominfoClientId : placeholderCredential
+      clientSecret: zoominfoRegistered ? zoominfoClientSecret : placeholderCredential
+    }
+    // ZoomInfo requires PKCE (S256), which Foundry's OAuth sign-in sends.
+    authorizationUrl: 'https://mcp.zoominfo.com/oauth/authorize'
+    tokenUrl: 'https://okta-login.zoominfo.com/oauth2/default/v1/token'
+    refreshUrl: 'https://okta-login.zoominfo.com/oauth2/default/v1/token'
+    scopes: zoominfoScopes
     isSharedToAll: false
     peRequirement: 'NotRequired'
   })
@@ -238,7 +316,15 @@ output projectName string = project.name
 output projectEndpoint string = 'https://${account.name}.services.ai.azure.com/api/projects/${project.name}'
 output modelDeploymentName string = modelDeployment.name
 output apimName string = apim.name
-output githubMcpUrl string = githubMcp.outputs.mcpUrl
-output githubConnectionId string = githubConnection.id
+output githubMcpUrl string = enableGitHub ? githubMcp!.outputs.mcpUrl : ''
+output githubConnectionId string = enableGitHub ? githubConnection.id : ''
 @description('Add this URL to the GitHub App as a callback URL.')
-output githubOAuthRedirectUrl string = any(githubConnection.properties).redirectUrl
+output githubOAuthRedirectUrl string = enableGitHub ? any(githubConnection!.properties).redirectUrl : ''
+@description('False until the GitHub App credentials are passed. Users cannot sign in to GitHub while this is false.')
+output githubRegistered bool = enableGitHub && githubRegistered
+output zoominfoMcpUrl string = enableZoomInfo ? zoominfoMcp!.outputs.mcpUrl : ''
+output zoominfoConnectionId string = enableZoomInfo ? zoominfoConnection.id : ''
+@description('Register this URL as a redirect URI on the ZoomInfo MCP app.')
+output zoominfoOAuthRedirectUrl string = enableZoomInfo ? any(zoominfoConnection!.properties).redirectUrl : ''
+@description('False until the ZoomInfo app credentials are passed. Users cannot sign in to ZoomInfo while this is false.')
+output zoominfoRegistered bool = enableZoomInfo && zoominfoRegistered

@@ -1,0 +1,32 @@
+<policies>
+  <!--
+    Policy for ZoomInfo's hosted MCP server (https://mcp.zoominfo.com/mcp).
+    The caller's Authorization header (the signed-in user's ZoomInfo token) is
+    forwarded unchanged. API Management never stores the token.
+  -->
+  <inbound>
+    <base />
+    <!-- Every call must carry the signed-in user's ZoomInfo token. -->
+    <choose>
+      <when condition='@(!context.Request.Headers.ContainsKey("Authorization"))'>
+        <return-response>
+          <set-status code="401" reason="ZoomInfo authorization required" />
+        </return-response>
+      </when>
+    </choose>
+    <!-- ZoomInfo's endpoint is exactly /mcp, with no trailing slash. -->
+    <rewrite-uri template="/mcp" copy-unmatched-params="true" />
+    <!-- Agent traffic arrives from shared platform IP addresses; size this limit accordingly. -->
+    <rate-limit-by-key calls="60" renewal-period="60" counter-key="@(context.Request.IpAddress)" />
+  </inbound>
+  <backend>
+    <!-- Stream server-sent events back without buffering. -->
+    <forward-request buffer-response="false" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

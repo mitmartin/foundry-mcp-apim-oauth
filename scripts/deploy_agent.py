@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Create or update the prompt agent and attach the GitHub MCP tool.
+"""Create or update a prompt agent with one MCP server's tool attached.
 
 The tool is attached directly to the agent. It points at the API Management
 MCP endpoint and uses the Foundry OAuth connection from the Bicep deployment,
-so each user signs in to GitHub once and every call runs as that user.
+so each user signs in to the service once and every call runs as that user.
 
-Example:
+Examples:
 
-    python scripts/deploy_agent.py --resource-group rg-mcp-agent --github-org my-org
+    python scripts/deploy_agent.py --resource-group rg-mcp-agent --service github --github-org my-org
+    python scripts/deploy_agent.py --resource-group rg-mcp-agent --service zoominfo
 """
 
 from __future__ import annotations
@@ -22,32 +23,38 @@ from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import MCPTool, PromptAgentDefinition
 from azure.identity import AzureCliCredential
 
-from common import deployment_outputs, with_retry
+from common import SERVICES, deployment_outputs, require_service, with_retry
 
-DEFAULT_DEFINITION = Path(__file__).resolve().parent.parent / "agent" / "agent.yaml"
 PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--resource-group", required=True)
+    parser.add_argument("--service", required=True, choices=sorted(SERVICES))
     parser.add_argument("--deployment-name", default="main")
     parser.add_argument("--subscription", help="Defaults to the active Azure CLI subscription")
     parser.add_argument(
         "--github-org",
-        required=True,
-        help="GitHub organization the agent uses when the user doesn't name one",
+        help="GitHub only: the organization the agent uses when the user doesn't name one",
     )
     parser.add_argument("--agent-name", help="Overrides the name in the definition file")
-    parser.add_argument("--definition", type=Path, default=DEFAULT_DEFINITION)
-    return parser.parse_args()
+    parser.add_argument(
+        "--definition",
+        type=Path,
+        help="Overrides the agent definition file (default: agent/<service>-agent.yaml)",
+    )
+    args = parser.parse_args()
+    if args.service == "github" and not args.github_org:
+        parser.error("--github-org is required for --service github")
+    return args
 
 
 def render(definition_path: Path, values: dict[str, str]) -> dict:
     text = definition_path.read_text(encoding="utf-8")
-    missing = sorted({name for name in PLACEHOLDER.findall(text) if name not in values})
+    missing = sorted({name for name in PLACEHOLDER.findall(text) if not values.get(name)})
     if missing:
-        raise ValueError(f"No value for placeholders: {', '.join(missing)}")
+        raise ValueError(f"No value for placeholders in {definition_path.name}: {', '.join(missing)}")
     return yaml.safe_load(PLACEHOLDER.sub(lambda m: values[m.group(1)], text))
 
 
@@ -70,15 +77,14 @@ def build_tools(tool_configs: list[dict]) -> list[MCPTool]:
 def main() -> None:
     args = parse_args()
     outputs = deployment_outputs(args.resource_group, args.deployment_name, args.subscription)
-    definition = render(
-        args.definition,
-        {
-            "MODEL_DEPLOYMENT_NAME": outputs["modelDeploymentName"],
-            "GITHUB_MCP_URL": outputs["githubMcpUrl"],
-            "GITHUB_CONNECTION_ID": outputs["githubConnectionId"],
-            "GITHUB_ORG": args.github_org,
-        },
-    )
+    settings = require_service(args.service, outputs)
+
+    values = {"MODEL_DEPLOYMENT_NAME": outputs["modelDeploymentName"]}
+    values.update({name: outputs[output] for name, output in settings["outputs"].items()})
+    if args.github_org:
+        values["GITHUB_ORG"] = args.github_org
+
+    definition = render(args.definition or settings["definition"], values)
     agent_name = args.agent_name or definition["name"]
 
     client = AIProjectClient(

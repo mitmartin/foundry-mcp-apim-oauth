@@ -91,7 +91,7 @@ The agent can only see private repositories where the app is installed. It can a
 
 ## Step 3: Add the Foundry callback URL
 
-The Foundry OAuth connection gets its own callback URL when the infrastructure is deployed. GitHub only sends users back to registered URLs, so sign-in fails until you add it.
+The Foundry OAuth connection gets its own callback URL when the infrastructure is deployed with `enableGitHub=true`. GitHub only sends users back to registered URLs, so sign-in fails until you add it.
 
 1. Get the URL from the deployment:
 
@@ -132,7 +132,7 @@ The sign-in applies to **one Microsoft Entra user and one Foundry connection**. 
 
 1. Update the app's permissions in GitHub. An organization owner must approve the change on the installation.
 2. Update the `githubToolsets` (and `githubReadOnly`) Bicep parameters and redeploy.
-3. If you enable write tools, set `require_approval: always` in `agent/agent.yaml` and redeploy the agent.
+3. If you enable write tools, set `require_approval: always` in `agent/github-agent.yaml` and redeploy the agent.
 
 ### Rotate the client secret
 

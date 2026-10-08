@@ -184,7 +184,7 @@ def main() -> None:
     server.shutdown()
 
     print("\nNext:")
-    print(f"  * Deploy infra with githubAppClientId={app['client_id']} and the client secret from {output}.")
+    print(f"  * Deploy infra with enableGitHub=true, githubAppClientId={app['client_id']}, and the client secret from {output}.")
     print("  * Then add the githubOAuthRedirectUrl deployment output as a callback URL at:")
     print(f"    https://github.com/organizations/{args.org}/settings/apps/{app['slug']}")
 

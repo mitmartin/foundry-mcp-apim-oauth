@@ -8,8 +8,17 @@
     "apimPublisherEmail": {
       "value": "<publisher-email>"
     },
+    "enableGitHub": {
+      "value": true
+    },
     "githubAppClientId": {
-      "value": "<github-app-client-id>"
+      "value": "<github-app-client-id-or-empty>"
+    },
+    "enableZoomInfo": {
+      "value": false
+    },
+    "zoominfoClientId": {
+      "value": ""
     },
     "developerPrincipalIds": {
       "value": [
