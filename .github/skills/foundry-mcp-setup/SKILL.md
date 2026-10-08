@@ -1,6 +1,6 @@
 ---
 name: foundry-mcp-setup
-description: Guides a user through deploying this repository's Microsoft Foundry prompt agents that call third-party MCP servers (GitHub and ZoomInfo) through Azure API Management with per-user OAuth. Use when asked to set up, deploy, test, or troubleshoot the GitHub or ZoomInfo MCP agents, create the GitHub App, register the ZoomInfo app, add Foundry callback URLs, or reset sign-ins.
+description: Guides a user through deploying this repository's Microsoft Foundry prompt agents that call third-party MCP servers (GitHub and ZoomInfo) through Azure API Management with per-user OAuth. Use when asked to set up, deploy, test, or troubleshoot the GitHub or ZoomInfo MCP agents, create the GitHub App, register the ZoomInfo app, add Foundry callback URLs, set up the toolbox, attach tools to agents through a toolbox or directly, or reset sign-ins.
 ---
 
 # Foundry MCP setup
@@ -21,6 +21,13 @@ Walk the user through `README.md` for the MCP servers they choose. Run every com
 ## Step 0: Choose services and collect inputs
 
 First ask which MCP servers to set up: **GitHub**, **ZoomInfo**, or **both**. Follow only the sections for the chosen services.
+
+Then ask how agents should get the tools. Explain the choice (details in `docs/toolbox.md`):
+
+- **Toolbox (Option A):** the agent attaches the whole toolbox in code. Toolbox changes reach every agent that uses it, but the portal doesn't list the tools in the agent's **Tools** section.
+- **Direct (Option B):** the service's tool is attached to the agent, in code or from the portal's **Configured** list. It shows in the portal, but each agent keeps its own copy of the tool settings.
+
+The tools always go in a toolbox (Step 4), because that makes them available both ways. Users sign in to each service once per project either way.
 
 Then collect these values together, suggesting defaults:
 
@@ -138,18 +145,36 @@ ZoomInfo only allows automatic client registration for its approved vendors, so 
 
 5. Optional check that signs no one in: request ZoomInfo's authorization endpoint with the app's client ID, the callback URL, and a PKCE challenge, without following redirects. A redirect to the ZoomInfo login page means the redirect URI is accepted. Requesting `https://okta-login.zoominfo.com/oauth2/default/v1/authorize` with the same values returns **400 "redirect_uri parameter must be a Login redirect URI"** if the URI isn't registered on the app.
 
-## Step 4: Deploy the agents
+## Step 4: Put the tools in a toolbox
 
-Run only for the chosen services:
+Include a `--service` for each chosen service:
 
 ```bash
+python scripts/create_toolbox.py --resource-group <rg> --service github --service zoominfo
+```
+
+Expect `Toolbox 'mcp-tools' version <n> is now the default.` (or `already up to date`) and `Toolbox connection 'mcp-tools-user' is configured.` Use `--toolbox-name` if the user wants another name or separate toolboxes.
+
+Check model capacity: each toolbox's tool definitions are sent with every request. ZoomInfo alone adds about 35K input tokens. If the user lowered `modelCapacity` below the default of 100, warn them about `429 Model deployment rate limit exceeded` (see `docs/toolbox.md#model-capacity`).
+
+## Step 5: Give the agents the tools
+
+Run only for the chosen services, using the option from Step 0:
+
+```bash
+# Option A: toolbox
+python scripts/deploy_agent.py --resource-group <rg> --service zoominfo --toolbox-name mcp-tools
+
+# Option B: direct
 python scripts/deploy_agent.py --resource-group <rg> --service github --github-org <org>
 python scripts/deploy_agent.py --resource-group <rg> --service zoominfo
 ```
 
-Expect `Deployed agent '<name>' version <n>.` A warning about placeholder credentials means Step 2 or Step 3b wasn't completed with that service's secret. A 401 or 403 usually means the user's Foundry role assignment is still propagating. Wait a few minutes and try again.
+`--github-org` is required for the GitHub agent in both options. Expect `Deployed agent '<name>' version <n> with ...`. A warning about placeholder credentials means Step 2 or Step 3b wasn't completed with that service's secret. A 401 or 403 usually means the user's Foundry role assignment is still propagating. Wait a few minutes and try again.
 
-## Step 5: Test
+Also tell the user they can add the tools directly to any agent in the portal: open the agent, select **Add** under **Tools**, and choose the tool under **Configured**.
+
+## Step 6: Test
 
 ```bash
 python scripts/smoke_test.py --resource-group <rg> --service github --github-org <org>
@@ -166,7 +191,7 @@ Also offer a portal test: in `https://ai.azure.com`, open the project, select **
 
 Summarize for the user:
 
-- Resource group, project endpoint, agent names, and APIM MCP URLs (from the deployment outputs)
+- Resource group, project endpoint, toolbox name, agent names and how each gets its tools, and APIM MCP URLs (from the deployment outputs)
 - GitHub App slug and ZoomInfo app name, and where the credentials files are
 - How other users get access: assign them **Foundry Agent Consumer** on the project, and they sign in to each service on first use
 - That every later deployment must pass each service's client secret
@@ -182,6 +207,9 @@ Summarize for the user:
 | `deploy_agent.py` says the service isn't deployed | Redeploy with `enableGitHub=true` or `enableZoomInfo=true`. |
 | Sign-in stopped working after a redeploy | The secret wasn't passed, so the connection was reset to placeholders. Redeploy with the secret. |
 | `Connection ... already exist, and can only be updated by the workspace that created it` | Connection names are unique across the Foundry account. Set different `githubConnectionName` and `zoominfoConnectionName` values for each project. |
+| `429 Model deployment rate limit exceeded` | The model's tokens-per-minute limit is too low for the tool definitions. Raise `modelCapacity` and redeploy. |
+| `Missing required query parameter: audience`, or `Toolbox connection ... wasn't found` | Run `create_toolbox.py`, then attach the toolbox with `deploy_agent.py --toolbox-name`. |
+| The tools don't show in an agent's Tools list in the portal | The agent uses the toolbox (Option A). That's expected. Use Option B if the user needs them listed. |
 | `401 ... token authentication failed` after sign-in worked before | The user's authorization was revoked in the service. Recreating the connection signs out every user. Confirm with the user before doing it. |
 | No sign-in card for a new user | Assign **Foundry Agent Consumer** or **Foundry User** on the project. The user must be in the project's Entra tenant. |
 | Python can't resolve the Foundry endpoint, but other tools can | A stale local DNS cache. Retry after a minute, or flush the DNS cache. |

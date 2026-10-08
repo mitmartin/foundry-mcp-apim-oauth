@@ -44,8 +44,8 @@ param modelVersion string = '2026-03-17'
 @description('Model deployment SKU.')
 param modelSkuName string = 'GlobalStandard'
 
-@description('Model capacity in thousands of tokens per minute.')
-param modelCapacity int = 10
+@description('Model capacity in thousands of tokens per minute. MCP tool definitions are large (ZoomInfo adds about 35K input tokens per request), so 10 is too low.')
+param modelCapacity int = 100
 
 @description('API Management service name. Must be globally unique.')
 param apimName string = '${namePrefix}-apim-${take(uniqueString(resourceGroup().id), 8)}'

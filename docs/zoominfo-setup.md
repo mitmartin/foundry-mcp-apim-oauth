@@ -93,10 +93,16 @@ The connection is updated in place, so its callback URL stays the same. Confirm 
 
 ## Step 4: Deploy and test the agent
 
+Put the ZoomInfo tools in a toolbox, then give the agent the tools either through the toolbox or directly. See [Toolbox and agents](toolbox.md).
+
 ```bash
-python scripts/deploy_agent.py --resource-group <resource-group> --service zoominfo
+python scripts/create_toolbox.py --resource-group <resource-group> --service zoominfo
+python scripts/deploy_agent.py --resource-group <resource-group> --service zoominfo --toolbox-name mcp-tools   # toolbox
+python scripts/deploy_agent.py --resource-group <resource-group> --service zoominfo                            # or directly
 python scripts/smoke_test.py --resource-group <resource-group> --service zoominfo
 ```
+
+The ZoomInfo tool definitions add about 35K input tokens to each request, so make sure the model has enough capacity. See [Model capacity](toolbox.md#model-capacity).
 
 The first smoke-test run prints a ZoomInfo sign-in link and exits with code 2. Open it, sign in, approve access, and run it again. The test calls ZoomInfo's free **Lookup** tool, so it doesn't use credits.
 
@@ -134,6 +140,7 @@ ZoomInfo sessions can expire after a few hours of inactivity, depending on your 
 | Tools return `403` | The user's package lacks the entitlement, or the user is out of credits | Check the user's ZoomInfo package and credit balance |
 | Enrichment fails with a credit error on an older subscription | MCP can't use recurring monthly credits | Ask the ZoomInfo admin to enable bulk data credits |
 | `429 Too Many Requests` | ZoomInfo allows 25 requests per second | Retry later, or lower the API Management rate limit |
+| `429 Model deployment rate limit exceeded` | The model's tokens-per-minute limit is too low for ZoomInfo's tool definitions | Raise `modelCapacity`. See [Model capacity](toolbox.md#model-capacity). |
 
 ## References
 

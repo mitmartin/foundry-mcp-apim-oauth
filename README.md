@@ -13,8 +13,8 @@ Two MCP servers are included. Turn on either or both:
 User in Foundry (signed in with Microsoft Entra ID)
    │
    ▼
-Foundry prompt agent ── MCP tool, attached directly to the agent
-   │                    uses a Foundry OAuth connection, which holds each user's token for that service
+Foundry prompt agent ── tools from a toolbox, or attached directly to the agent
+   │                    both use a Foundry OAuth connection, which holds each user's token for that service
    ▼
 Azure API Management   /github-mcp/mcp, /zoominfo-mcp/mcp
    │                    requires a token, applies policy, throttles, streams
@@ -28,7 +28,7 @@ Third-party MCP server (GitHub, ZoomInfo)
 - **Per-user access.** The first time a user calls a service's tool, the agent shows a sign-in card. The user signs in to that service, and Foundry stores that user's token for the connection. Later calls reuse it and refresh it automatically.
 - **Least privilege.** A user can only reach what **they** can access in the service. For GitHub, access is further limited by your GitHub App's read-only permissions and installation.
 - **Central governance.** Each service has its own APIM API and policy. Every policy rejects calls without a token and throttles traffic. The GitHub policy also pins toolsets and forces read-only mode.
-- **Configure once.** OAuth connections are project resources. Any agent in the project can attach the same MCP tool and reuse each user's sign-in.
+- **Tools set up once.** The MCP tools go in a [Foundry toolbox](docs/toolbox.md). An agent can attach the whole toolbox in code, or you can add individual tools directly to an agent; in the portal they appear under **Configured**. Both options use the same OAuth connections, so users sign in to each service once per project.
 
 ## What gets deployed
 
@@ -39,12 +39,13 @@ Third-party MCP server (GitHub, ZoomInfo)
 | `github-mcp` API and `github-mcp-oauth` connection | `enableGitHub` | GitHub MCP passthrough ([policy](infra/policies/github-mcp.xml)) and the connection that stores users' GitHub tokens |
 | `zoominfo-mcp` API and `zoominfo-mcp-oauth` connection | `enableZoomInfo` | ZoomInfo MCP passthrough ([policy](infra/policies/zoominfo-mcp.xml)) and the connection that stores users' ZoomInfo tokens |
 | Foundry role assignments | Optional | **Foundry User** for developers, **Foundry Agent Consumer** for chat-only users |
-| Prompt agents `github-mcp-agent` and `zoominfo-research-agent` | Per service | Created by [`scripts/deploy_agent.py`](scripts/deploy_agent.py). Prompt agents are Foundry data-plane objects, so Bicep can't create them. |
+| Toolbox `mcp-tools` and connection `mcp-tools-user` | After deployment | Created by [`scripts/create_toolbox.py`](scripts/create_toolbox.py). Holds the MCP tools for agents to share. |
+| Prompt agents `github-mcp-agent` and `zoominfo-research-agent` | Per service | Created by [`scripts/deploy_agent.py`](scripts/deploy_agent.py), with the toolbox or with tools attached directly. Toolboxes and prompt agents are Foundry data-plane objects, so Bicep can't create them. |
 
 ## Prerequisites
 
 - An Azure subscription where you can create resource groups and assign roles (Owner, or Contributor plus User Access Administrator).
-- Quota for the model in your region. The defaults are `gpt-5.4-mini`, version `2026-03-17`, Global Standard, 10K tokens per minute. Override them with the `model*` parameters.
+- Quota for the model in your region. The defaults are `gpt-5.4-mini`, version `2026-03-17`, Global Standard, 100K tokens per minute. MCP tool definitions are large, so don't go much lower. See [Model capacity](docs/toolbox.md#model-capacity). Override them with the `model*` parameters.
 - For GitHub: owner access to a GitHub organization, or an owner who can do the [GitHub setup](docs/github-setup.md).
 - For ZoomInfo: a ZoomInfo login with data access, and access to the API/MCP tab or the Developer Portal. See [ZoomInfo setup](docs/zoominfo-setup.md#before-you-start).
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) with Bicep, and Python 3.10 or later.
@@ -68,7 +69,7 @@ Other agents that support [agent skills](https://docs.github.com/copilot/concept
 
 ## Quick start
 
-Each service follows the same pattern: deploy its connection, register the service's app with the connection's callback URL, deploy with the app credentials, then deploy and test the agent.
+Each service follows the same pattern: deploy its connection, register the service's app with the connection's callback URL, and deploy with the app credentials. Then put the tools in a toolbox, give agents the tools, and test.
 
 ### 1. Choose your MCP servers and fill in parameters
 
@@ -124,16 +125,30 @@ The `githubRegistered` and `zoominfoRegistered` outputs show whether each connec
 
 > **Important:** Once a service's app exists, pass its client secret on **every** deployment. Deploying with an empty secret resets that connection to placeholders, and sign-in to that service stops working.
 
-### 4. Deploy the agents
+### 4. Put the tools in a toolbox
 
 ```bash
+python scripts/create_toolbox.py --resource-group <resource-group> --service github --service zoominfo
+```
+
+Include a `--service` for each enabled MCP server. This creates the `mcp-tools` toolbox and makes the tools available to agents. See [Toolbox and agents](docs/toolbox.md).
+
+### 5. Deploy the agents
+
+Give each agent the tools in either of two ways:
+
+```bash
+# Option A: attach the whole toolbox (doesn't show in the portal's Tools list)
+python scripts/deploy_agent.py --resource-group <resource-group> --service zoominfo --toolbox-name mcp-tools
+
+# Option B: attach the service's tool directly (shows in the portal's Tools list)
 python scripts/deploy_agent.py --resource-group <resource-group> --service github --github-org <your-org>
 python scripts/deploy_agent.py --resource-group <resource-group> --service zoominfo
 ```
 
-Each command creates a new version of that service's agent from [`agent/github-agent.yaml`](agent/github-agent.yaml) or [`agent/zoominfo-agent.yaml`](agent/zoominfo-agent.yaml), with the MCP tool attached directly. Rerun it whenever you change a definition.
+`--service` picks the instructions and name from [`agent/github-agent.yaml`](agent/github-agent.yaml) or [`agent/zoominfo-agent.yaml`](agent/zoominfo-agent.yaml). Rerun the command whenever you change a definition. You can also add the tools directly to any agent in the [Foundry portal](https://ai.azure.com): under the agent's **Tools**, select **Add**, then choose the tool under **Configured**.
 
-### 5. Test
+### 6. Test
 
 ```bash
 python scripts/smoke_test.py --resource-group <resource-group> --service github --github-org <your-org>
@@ -150,7 +165,7 @@ You can also test in the [Foundry portal](https://ai.azure.com): open the projec
 |---|---|
 | Where tokens live | Foundry stores each user's token per Entra user and per connection. Tokens aren't stored in the browser, in APIM, or in this repository. |
 | How long sign-in lasts | It depends on the service. GitHub App access tokens last 8 hours and refresh automatically for up to 6 months of inactivity. ZoomInfo sessions follow your ZoomInfo security settings. |
-| Multiple agents | Agents in the same project that use the same connection share each user's sign-in. Another project needs its own connections and its own sign-ins. |
+| Multiple agents | Agents in the same project that use the same connection share each user's sign-in, whether they use the toolbox or direct tools. Another project needs its own connections and its own sign-ins. |
 | Several projects in one Foundry account | Connection names must be unique across the whole Foundry account, not just the project. Set `githubConnectionName` and `zoominfoConnectionName` per project. |
 | Rotating a client secret | Redeploy the Bicep template with the new secret. Users stay signed in, and the callback URL doesn't change. |
 | Signing everyone out | Delete and recreate the connection, then add its new callback URL to the service's app. |
@@ -164,7 +179,8 @@ You can also test in the [Foundry portal](https://ai.azure.com): open the projec
 | Allow GitHub write tools | Set `githubReadOnly` to `false`, add write permissions to the GitHub App, and set `require_approval: always` in `agent/github-agent.yaml`. |
 | Agent instructions or names | Edit the files in `agent/`, then rerun `scripts/deploy_agent.py`. |
 | Another MCP server | Add a policy file, another `modules/apim-mcp-passthrough.bicep` instance, and an OAuth connection with that provider's authorization URL, token URL, and scopes. Then add an entry to `SERVICES` in `scripts/common.py` and an agent definition. |
-| Share tools across many agents or runtimes | Consider a [Foundry toolbox](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/toolbox) (preview). This repository attaches tools directly to agents. |
+| Separate toolboxes | Run `create_toolbox.py` with a different `--toolbox-name` and `--service` set, for example one toolbox per team or per service. |
+| Hosted agents and other MCP clients | Point them at the toolbox endpoint. See [Use a toolbox with a hosted agent](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/use-toolbox-hosted-agent). |
 
 ## Known limitations
 
@@ -175,6 +191,7 @@ You can also test in the [Foundry portal](https://ai.azure.com): open the projec
 - **Rate limiting by IP address.** Agent traffic reaches APIM from shared platform IP addresses, so the rate limit applies to all users together. Size it for your workload.
 - **Public endpoint.** The APIM endpoint is reachable from the internet. It rejects calls without a token, and a token only grants its owner's access, but you can add network restrictions for production.
 - **Same tenant only.** Users must be in the same Microsoft Entra tenant as the Foundry project.
+- **Toolboxes are in preview.** The portal doesn't list a toolbox's tools in an agent's **Tools** section, though they work at runtime. Tools added directly do show there.
 - **Developer SKU.** The default APIM SKU has no SLA. Use `BasicV2`, `StandardV2`, or `Premium` for production.
 
 ## Security notes
@@ -199,6 +216,7 @@ Then delete the GitHub App (its settings → **Advanced → Delete GitHub App**)
 agent/github-agent.yaml                       GitHub prompt agent definition
 agent/zoominfo-agent.yaml                     ZoomInfo prompt agent definition
 docs/github-setup.md                          GitHub App setup, maintenance, and troubleshooting
+docs/toolbox.md                               Toolbox, direct tools, and model capacity
 docs/zoominfo-setup.md                        ZoomInfo app setup, credits, maintenance, and troubleshooting
 infra/main.bicep                              Foundry, APIM, OAuth connections, roles
 infra/modules/apim-mcp-passthrough.bicep      Reusable APIM MCP passthrough
@@ -207,7 +225,8 @@ infra/policies/zoominfo-mcp.xml               ZoomInfo MCP gateway policy
 infra/main.parameters.example.json            Parameter template
 scripts/common.py                             Shared helpers and per-service settings
 scripts/create_github_app.py                  Creates the read-only GitHub App
-scripts/deploy_agent.py                       Creates an agent and attaches its MCP tool
+scripts/create_toolbox.py                     Puts the MCP tools in a toolbox
+scripts/deploy_agent.py                       Creates an agent with the toolbox or direct tools
 scripts/smoke_test.py                         End-to-end test
 ```
 

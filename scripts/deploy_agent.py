@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Create or update a prompt agent with one MCP server's tool attached.
+"""Create or update a prompt agent and give it MCP tools.
 
-The tool is attached directly to the agent. It points at the API Management
-MCP endpoint and uses the Foundry OAuth connection from the Bicep deployment,
-so each user signs in to the service once and every call runs as that user.
+By default, the service's MCP tool is attached directly to the agent. With
+--toolbox-name, the agent gets a toolbox (from create_toolbox.py) instead,
+which exposes every tool in that toolbox. Either way, the tools use the Foundry
+OAuth connections from the Bicep deployment, so each user signs in to each
+service once and every call runs as that user.
 
 Examples:
 
     python scripts/deploy_agent.py --resource-group rg-mcp-agent --service github --github-org my-org
     python scripts/deploy_agent.py --resource-group rg-mcp-agent --service zoominfo
+    python scripts/deploy_agent.py --resource-group rg-mcp-agent --service zoominfo --toolbox-name mcp-tools
 """
 
 from __future__ import annotations
@@ -23,7 +26,8 @@ from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import MCPTool, PromptAgentDefinition
 from azure.identity import AzureCliCredential
 
-from common import SERVICES, deployment_outputs, require_service, with_retry
+from common import SERVICES, az, deployment_outputs, require_service, with_retry
+from create_toolbox import project_id_from, toolbox_connection_id, toolbox_url
 
 PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -39,6 +43,13 @@ def parse_args() -> argparse.Namespace:
         help="GitHub only: the organization the agent uses when the user doesn't name one",
     )
     parser.add_argument("--agent-name", help="Overrides the name in the definition file")
+    parser.add_argument(
+        "--toolbox-name",
+        help=(
+            "Attach this toolbox (from create_toolbox.py) instead of the definition's "
+            "direct tool. The agent gets every tool in the toolbox."
+        ),
+    )
     parser.add_argument(
         "--definition",
         type=Path,
@@ -74,6 +85,25 @@ def build_tools(tool_configs: list[dict]) -> list[MCPTool]:
     return tools
 
 
+def toolbox_tool(outputs: dict, service: str, toolbox_name: str) -> MCPTool:
+    """One MCP tool that exposes every tool in the toolbox."""
+    connection_id = toolbox_connection_id(project_id_from(outputs, [service]), toolbox_name)
+    try:
+        az("rest", "--method", "get", "--url",
+           f"https://management.azure.com{connection_id}?api-version=2025-06-01")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Toolbox connection '{toolbox_name}-user' wasn't found. Run "
+            f"scripts/create_toolbox.py --toolbox-name {toolbox_name} first."
+        ) from exc
+    return MCPTool(
+        server_label=re.sub(r"[^A-Za-z0-9_]", "_", toolbox_name),
+        server_url=toolbox_url(outputs["projectEndpoint"], toolbox_name),
+        project_connection_id=connection_id,
+        require_approval="never",
+    )
+
+
 def main() -> None:
     args = parse_args()
     outputs = deployment_outputs(args.resource_group, args.deployment_name, args.subscription)
@@ -86,6 +116,10 @@ def main() -> None:
 
     definition = render(args.definition or settings["definition"], values)
     agent_name = args.agent_name or definition["name"]
+    if args.toolbox_name:
+        tools = [toolbox_tool(outputs, args.service, args.toolbox_name)]
+    else:
+        tools = build_tools(definition.get("tools", []))
 
     client = AIProjectClient(
         endpoint=outputs["projectEndpoint"], credential=AzureCliCredential()
@@ -96,11 +130,12 @@ def main() -> None:
             definition=PromptAgentDefinition(
                 model=definition["model"],
                 instructions=definition["instructions"],
-                tools=build_tools(definition.get("tools", [])),
+                tools=tools,
             ),
         )
     )
-    print(f"Deployed agent '{agent.name}' version {agent.version}.")
+    attached = f"toolbox '{args.toolbox_name}'" if args.toolbox_name else "its MCP tool directly"
+    print(f"Deployed agent '{agent.name}' version {agent.version} with {attached}.")
     print(f"Project endpoint: {outputs['projectEndpoint']}")
 
 
